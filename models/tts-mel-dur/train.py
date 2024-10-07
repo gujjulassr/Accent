@@ -10,7 +10,7 @@ import numpy as np
 from itertools import groupby
 import random
 from scipy.io import wavfile
-from utils import kaldi_pad, preemphasis
+from utils.utils import inv_minmax_norm
 from dataloader import dg_kaldi_tts
 import kaldiio
 import sys
@@ -27,9 +27,14 @@ random.seed(SEED)
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
 
-is_inference=sys.argv[1]
 
-duration_modifier=sys.argv[2]
+is_train=sys.argv[1]
+is_inference=sys.argv[2]
+duration_modifier=sys.argv[3]
+checkpoint_path=sys.argv[4]
+averaged_features=sys.argv[5]
+
+speaker_embedding=sys.argv[6]
 
 
 
@@ -144,53 +149,6 @@ def acoustic_decoder(inputs):
 
 
 
-
-folder_1 = 'speaker_audio_paths.txt'
-
-
-dg_train = dg_kaldi_tts(folder_1,batch_size=48, shuffle=True)
-
-
-
-dg_val = dg_kaldi_tts(folder_1, batch_size=48, shuffle=True)
-
-
-X, Y = dg_train.__getitem__(0)
-
-output_signature = (
-    (
-        tf.TensorSpec(shape=(None, None, 768), dtype=tf.float32),  # fea_lis (features list)
-        tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),    # phn_mask (phoneme mask)
-        tf.TensorSpec(shape=(None, None, 2), dtype=tf.float32),    # phn_repeats (phoneme repeats)
-        tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),    # len_mask (length mask)
-        tf.TensorSpec(shape=(None,256), dtype=tf.float32),
-    ),
-    (
-        tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),    # phn_freq (phoneme frequency)
-        tf.TensorSpec(shape=(None, None, 80), dtype=tf.float32)    # mel_lis (mel spectrogram)
-    )
-)
-
-
-# Convert your generator into a TensorFlow dataset
-dg_train_tf = tf.data.Dataset.from_generator(
-    lambda: dg_train,  # Your data generator
-    output_signature=output_signature
-).repeat().prefetch(tf.data.experimental.AUTOTUNE)
-
-dg_val_tf = tf.data.Dataset.from_generator(
-    lambda: dg_val,  # Validation generator
-    output_signature=output_signature
-).repeat().prefetch(tf.data.experimental.AUTOTUNE)
-
-# .prefetch(tf.data.experimental.AUTOTUNE)
-
-
-
-
-
-
-
 phn_lab=tf.keras.Input(shape=(None, 768), dtype=tf.float32)
 phn_mask=tf.keras.Input(shape=(None,1), dtype=tf.float32)
 phn_repeats=tf.keras.Input(shape=(None,2), dtype=tf.int32)
@@ -199,8 +157,54 @@ len_mask=tf.keras.Input(shape=(None,1), dtype=tf.float32)
 spkr_lab_enc=tf.keras.Input(shape=(None,256), dtype=tf.int32)
 
 
-                       
-encoder_output = text_encoder(phn_lab, inp_dim=768)
+
+
+
+                    
+
+
+
+if is_train:
+
+    folder_1 = 'speaker_audio_paths.txt'
+
+
+    dg_train = dg_kaldi_tts(folder_1,batch_size=48, shuffle=True)
+
+
+
+    dg_val = dg_kaldi_tts(folder_1, batch_size=48, shuffle=True)
+
+
+    X, Y = dg_train.__getitem__(0)
+
+    output_signature = (
+        (
+            tf.TensorSpec(shape=(None, None, 768), dtype=tf.float32),  # fea_lis (features list)
+            tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),    # phn_mask (phoneme mask)
+            tf.TensorSpec(shape=(None, None, 2), dtype=tf.float32),    # phn_repeats (phoneme repeats)
+            tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),    # len_mask (length mask)
+            tf.TensorSpec(shape=(None,256), dtype=tf.float32),
+        ),
+        (
+            tf.TensorSpec(shape=(None, None, 1), dtype=tf.float32),    # phn_freq (phoneme frequency)
+            tf.TensorSpec(shape=(None, None, 80), dtype=tf.float32)    # mel_lis (mel spectrogram)
+        )
+    )
+
+
+    # Convert your generator into a TensorFlow dataset
+    dg_train_tf = tf.data.Dataset.from_generator(
+        lambda: dg_train,  # Your data generator
+        output_signature=output_signature
+    ).repeat().prefetch(tf.data.experimental.AUTOTUNE)
+
+    dg_val_tf = tf.data.Dataset.from_generator(
+        lambda: dg_val,  # Validation generator
+        output_signature=output_signature
+    ).repeat().prefetch(tf.data.experimental.AUTOTUNE)
+
+    # .prefetch(tf.data.experimental.AUTOTUNE)
 
 
 
@@ -208,16 +212,6 @@ encoder_output = text_encoder(phn_lab, inp_dim=768)
 
 
 
-text_spkr_emb = Concatenate(axis=-1)([encoder_output, spkr_lab_enc])
-
-# #Duration Estimation
-# est_dur=Dense(64, activation='relu')(text_spkr_emb)
-# est_dur=Dense(64, activation='relu')(est_dur)
-# est_dur=Dense(1, activation='relu')(est_dur)
-# est_dur = Multiply(name='dur')([est_dur, phn_mask])
-
-est_dur=duration_predictor(text_spkr_emb)
-est_dur = Multiply(name='dur')([est_dur, phn_mask])
 
 
 
@@ -225,74 +219,204 @@ est_dur = Multiply(name='dur')([est_dur, phn_mask])
 
 
 
+    encoder_output = text_encoder(phn_lab, inp_dim=768)
+    text_spkr_emb = Concatenate(axis=-1)([encoder_output, spkr_lab_enc])
 
-if not is_inference:
+    # #Duration Estimation
+    # est_dur=Dense(64, activation='relu')(text_spkr_emb)
+    # est_dur=Dense(64, activation='relu')(est_dur)
+    # est_dur=Dense(1, activation='relu')(est_dur)
+    # est_dur = Multiply(name='dur')([est_dur, phn_mask])
+
+    est_dur=duration_predictor(text_spkr_emb)
+    est_dur = Multiply(name='dur')([est_dur, phn_mask])
+
+
+
+
+
+
+
+
+
+
 
     x = Lambda(lambda x: tf.gather_nd(x[0],x[1]),output_shape=(None,384))([text_spkr_emb, phn_repeats])
 
-else:
-    dur_model = tf.keras.models.Model(inputs=[text_spkr_emb, phn_mask],outputs=[est_dur])
-    est_dur = dur_model.predict([tf.expand_dims(phn_lab, axis=0), tf.expand_dims(phn_mask, axis=0)])
+
+
+
+
+
+
+
+
+
+    upsampled_enc = Multiply()([x, len_mask])
+
+
+
+
+
+
+
+
+
+
+
+
+    x = acoustic_decoder(upsampled_enc)
+
+
+
+    x = new_acoustic_decoder(x, n_blocks=3, n_heads=4, head_size=64, context=10, inter_dim=128, out_dim=128)
+
+    est_mel = Dense(80, activation='relu')(x)
+    mel_gate = Dense(80, activation='sigmoid')(x)
+    est_mel = Multiply()([est_mel, mel_gate])
+    est_mel = Multiply(name='mel')([est_mel, len_mask])
+
+
+
+
+
+    model = tf.keras.Model(inputs=[phn_lab, phn_mask, phn_repeats , len_mask, spkr_lab_enc], 
+            outputs=[est_dur, est_mel])
+    model.summary()
+    #model.load_weights('dur_model.h5')
+    lr= 1e-4
+    #lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+    #        lr, decay_steps=303*5, decay_rate=0.95, staircase=True)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+    start_time = time.time()
+
+    model.compile(optimizer=optimizer, loss={'dur': 'mae','mel': 'mae',}, 
+                                    loss_weights={'dur':30,'mel':10})
+
+    print(f"Model compilation took: {time.time() - start_time} seconds")
+
+    model_check = ModelCheckpoint('weights_mel_tap_text_enc/weights-{epoch:04d}.keras', monitor='val_loss',save_best_only=True,save_weights_only=False)  #, save_best_only=True
+    early_stop = EarlyStopping(monitor='val_loss', patience=100)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=30, min_lr=1e-8, verbose=True, min_delta=0)
+    EPOCHS=350
+
+
+
+    history=model.fit(dg_train, 
+            validation_data=dg_val, 
+            epochs=EPOCHS, verbose=1, 
+            callbacks=[model_check, early_stop, reduce_lr],
+            )
+
+
+
+    tf.profiler.experimental.stop()  # Stop profiler
+if is_inference:
+
+    encoder_output = text_encoder(phn_lab, inp_dim=768)
+
+
+
+
+
+
+
+    text_spkr_emb = Concatenate(axis=-1)([encoder_output, spkr_lab_enc])
+
+    # #Duration Estimation
+    # est_dur=Dense(64, activation='relu')(text_spkr_emb)
+    # est_dur=Dense(64, activation='relu')(est_dur)
+    # est_dur=Dense(1, activation='relu')(est_dur)
+    # est_dur = Multiply(name='dur')([est_dur, phn_mask])
+
+    est_dur=duration_predictor(text_spkr_emb)
+    est_dur = Multiply(name='dur')([est_dur, phn_mask])
+
+
+
+
+
+
+
+
+
+
+
+    x = Lambda(lambda x: tf.gather_nd(x[0],x[1]),output_shape=(None,384))([text_spkr_emb, phn_repeats])
+
+
+
+
+
+
+
+
+
+
+    upsampled_enc = Multiply()([x, len_mask])
+
+
+
+
+
+
+
+
+
+
+
+
+    x = acoustic_decoder(upsampled_enc)
+
+
+
+    x = new_acoustic_decoder(x, n_blocks=3, n_heads=4, head_size=64, context=10, inter_dim=128, out_dim=128)
+
+    est_mel = Dense(80, activation='relu')(x)
+    mel_gate = Dense(80, activation='sigmoid')(x)
+    est_mel = Multiply()([est_mel, mel_gate])
+    est_mel = Multiply(name='mel')([est_mel, len_mask])
+
+
+
+
+
+    model = tf.keras.Model(inputs=[phn_lab, phn_mask, phn_repeats , len_mask, spkr_lab_enc], 
+            outputs=[est_dur, est_mel])
     
 
+    assert checkpoint_path is not None
 
 
-upsampled_enc = Multiply()([x, len_mask])
+    model.load_weights(checkpoint_path)
+
+    dur_model = tf.keras.models.Model(inputs=[model.input[0], model.input[1],model.input[4]], outputs=model.output[0])
 
 
+    assert averaged_features is not None
 
+    phn_lab=tf.convert_to_tensor(averaged_features)
 
+    phn_mask=np.ones(len(phn_lab))
+    speaker_embedding=tf.convert_to_tensor(speaker_embedding)
 
-
-
-
-
-
-
-
-x = acoustic_decoder(upsampled_enc)
-
-
-
-x = new_acoustic_decoder(x, n_blocks=3, n_heads=4, head_size=64, context=10, inter_dim=128, out_dim=128)
-
-est_mel = Dense(80, activation='relu')(x)
-mel_gate = Dense(80, activation='sigmoid')(x)
-est_mel = Multiply()([est_mel, mel_gate])
-est_mel = Multiply(name='mel')([est_mel, len_mask])
+    
+    speaker_embedding=np.tile(speaker_embedding,[len(phn_lab),1])    
 
 
 
+    speaker_embedding=tf.expand_dims(speaker_embedding, axis=0)
 
+    est_dur = dur_model.predict([tf.expand_dims(phn_lab, axis=0), tf.expand_dims(phn_mask, axis=0),speaker_embedding ])
+    est_dur = est_dur[0,:,0]
+    est_dur=est_dur*duration_modifier
 
-model = tf.keras.Model(inputs=[phn_lab, phn_mask, phn_repeats , len_mask, spkr_lab_enc], 
-        outputs=[est_dur, est_mel])
-model.summary()
-#model.load_weights('dur_model.h5')
-lr= 1e-4
-#lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-#        lr, decay_steps=303*5, decay_rate=0.95, staircase=True)
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-start_time = time.time()
-
-model.compile(optimizer=optimizer, loss={'dur': 'mae','mel': 'mae',}, 
-                                   loss_weights={'dur':30,'mel':10})
-
-print(f"Model compilation took: {time.time() - start_time} seconds")
-
-model_check = ModelCheckpoint('weights_mel_tap_text_enc/weights-{epoch:04d}.keras', monitor='val_loss')  #, save_best_only=True
-early_stop = EarlyStopping(monitor='val_loss', patience=100)
-reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=30, min_lr=1e-8, verbose=True, min_delta=0)
-EPOCHS=350
-
-
-
-history=model.fit(dg_train, 
-        validation_data=dg_val, 
-        epochs=EPOCHS, verbose=1, 
-        callbacks=[model_check, early_stop, reduce_lr],
-        )
-
-
-
-tf.profiler.experimental.stop()  # Stop profiler
+    phn_freq=inv_minmax_norm(est_dur, min_val=3, max_val=50)
+    phn_freq=np.round(phn_freq).astype('uint8')
+    phn_repeats=np.repeat(np.arange(len(phn_freq)), phn_freq)
+    phn_repeats=np.stack((np.zeros(phn_repeats.shape[0]), phn_repeats), axis=-1)
+    len_mask = np.ones(len(phn_repeats))
+    est_dur,est_mel= model.predict(
+            [tf.expand_dims(phn_lab, axis=0), tf.expand_dims(phn_mask, axis=0), 
+                tf.expand_dims(phn_repeats, axis=0),  tf.expand_dims(len_mask, axis=0), speaker_embedding])
+    
