@@ -27,6 +27,11 @@ random.seed(SEED)
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
 
+is_inference=sys.argv[1]
+
+duration_modifier=sys.argv[2]
+
+
 
 
 
@@ -221,17 +226,14 @@ est_dur = Multiply(name='dur')([est_dur, phn_mask])
 
 
 
+if not is_inference:
 
+    x = Lambda(lambda x: tf.gather_nd(x[0],x[1]),output_shape=(None,384))([text_spkr_emb, phn_repeats])
 
-
-x = Lambda(lambda x: tf.gather_nd(x[0],x[1]),output_shape=(None,384))([text_spkr_emb, phn_repeats])
-
-
-
-
-
-
-
+else:
+    dur_model = tf.keras.models.Model(inputs=[text_spkr_emb, phn_mask],outputs=[est_dur])
+    est_dur = dur_model.predict([tf.expand_dims(phn_lab, axis=0), tf.expand_dims(phn_mask, axis=0)])
+    
 
 
 
